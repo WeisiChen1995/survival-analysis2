@@ -1,0 +1,20 @@
+project:
+  type: website
+
+website:
+  title: "Survival Analysis Demonstration"
+  navbar:
+    left:
+      - href: fix-time.qmd
+        text: Fix-time Survival Analysis
+      - href: time-varying.qmd
+        text: Time-varying Survival Analysis
+
+format:
+  html:
+    theme: cosmo
+    css: styles.css
+    toc: true
+
+editor: visual
+

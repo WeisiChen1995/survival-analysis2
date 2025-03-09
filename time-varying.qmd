@@ -1,0 +1,60 @@
+---
+title: "Time-Varying Survival Analysis"
+author: "Weisi Chen"
+date: "`r Sys.Date()`"  # Inserts today's date
+format:
+  html:
+    toc: true
+    toc-location: right
+    toc-depth: 5
+    embed-resources: true
+    theme: cosmo
+  pdf:
+    toc: true
+    toc-depth: 5
+  docx:
+    toc: true
+    toc-depth: 5
+    toc-title: Contents
+    reference-docx: "custom-reference-doc.docx"  
+execute:
+  warning: false
+  message: false
+  eval: true
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE,
+  fig.path = "figs/",
+  fig.width = 7.252,
+  fig.height = 4,
+  comment = "#>",
+  fig.retina = 3,
+  R.options = list(width = 60)
+)
+```
+
+```{r}
+# Load the needed packages
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(survival)
+library(ggsurvfit)
+library(gtsummary)
+library(here)
+library(survminer)
+library(broom)
+library(forestploter)
+library(tidyr)
+```
+
+
+```{r}
+# Load the data
+```
