@@ -1,0 +1,488 @@
+---
+title: "Fixed Time Survival Analysis"
+author: "Weisi Chen"
+date: "`r Sys.Date()`"  # Inserts today's date
+format:
+  html:
+    toc: true
+    toc-location: right
+    toc-depth: 5
+    embed-resources: true
+    theme: cosmo
+  pdf:
+    toc: true
+    toc-depth: 5
+  docx:
+    toc: true
+    toc-depth: 5
+    toc-title: Contents
+    reference-docx: "custom-reference-doc.docx"  
+execute:
+  warning: false
+  message: false
+  eval: true
+editor: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  warning = FALSE,
+  message = FALSE,
+  fig.path = "figs/",
+  fig.width = 7.252,
+  fig.height = 4,
+  comment = "#>",
+  fig.retina = 3,
+  R.options = list(width = 60)
+)
+```
+
+```{r}
+# Load the needed packages
+library(ggplot2)
+library(dplyr)
+library(lubridate)
+library(survival)
+library(ggsurvfit)
+library(gtsummary)
+library(here)
+library(survminer)
+library(broom)
+library(forestploter)
+library(tidyr)
+```
+
+```{r}
+# Load example data
+df <- colon
+```
+
+This analysis focus on survival following the chemotherapy treatment for
+colon cancer.
+
+### About the sample data
+
+The data come from the `colon` dataset, available from the *survival*
+package. These data include information from a clinical trial on the
+effectiveness of two different types of chemotherapy (levamisole and
+levamisole+5-fluorouracil) compared to controls (i.e. no chemotherapy
+treatment) on survival from stage B/C colon cancer.
+
+There are two rows per person in the dataset, one for cancer recurrence
+and one for death, indicated by the event type (`etype`) variable
+(`etype==1` corresponds to recurrence and `etype==2` to death). In
+analysis below, I only focus on analysing death as an outcome.
+
+Note: there is some incomplete values on the `differ` variable, for
+simplicity, in the below analysis, I drop those incomplete values.
+
+Some important variables:
+
+`rx`: Treatment - Obs(ervation), Lev(amisole), Lev(amisole)+5-FU <br>
+`sex`: 1=male <br> `age`: in years <br> `obstruct`: obstruction of colon
+by tumour <br> `perfor`: perforation of colon <br> `adhere`: adherence
+to nearby organs <br> `nodes`: number of lymph nodes with detectable
+cancer <br> `time`: days until event or censoring <br> `status`:
+censoring status <br> `differ`: differentiation of tumour (1=well,
+2=moderate, 3=poor) <br> `extent`: Extent of local spread (1=submucosa,
+2=muscle, 3=serosa, 4=contiguous structures) <br> `surg`: time from
+surgery to registration (0=short, 1=long) <br> `node4`: more than 4
+positive lymph nodes <br> `etype`: event type: 1=recurrence,2=death <br>
+
+### Data cleaning
+
+-   Filter records with death outcome
+-   Drop incomplete values on the `diff` variable
+-   Label the `diff` and `extent` variables
+-   Stratify the `age` variable
+
+```{r}
+df1 <- df %>%
+  filter(etype == 2) %>% # Filter to deaths
+  filter(!is.na(differ)) %>%
+  mutate(
+    differF = factor(differ, levels = 1:3, labels = c("well","moderate","poor")),
+    extentF = factor(extent, levels = 1:4, labels = c("submucosa","muscle","serosa","contiguous")),
+    ageF = factor(ifelse(age<70, 1, 2), levels = 1:2, labels = c('18-69', '70+')),
+    sexF = factor(sex, levels = 0:1, labels = c("Female","Male")),
+    surgF = factor(surg, levels = 0:1, labels = c("short", "long"))
+  )
+  
+```
+
+### EDA
+
+#### Table 1: Summary of demographics and disease status by treatment group
+
+```{r echo=FALSE}
+df1 %>%
+  # Add total number
+  mutate(total = TRUE) %>%
+  
+  # Select relevant variables
+  select(total, age, sexF, obstruct, perfor, adhere,
+      differF, extentF, surgF, node4, time, status, rx) %>%
+  
+  # Create a summary table by Diabetes group
+  tbl_summary(
+    by = rx,
+    type = all_continuous() ~ "continuous2",
+    statistic = list(
+      # Include additional summary statistics for continuous variables
+      all_continuous() ~ c("{mean}, ({sd})",
+                           "{median}, ({p25}, {p75})",
+                           "{min}, {max}"),
+      all_categorical() ~ "{n} ({p}%)"
+    ),
+    label = list(
+      total = "Total (column denominator)",
+      age ~ "Age",
+      sexF ~ "Sex",
+      obstruct ~ "Obstruction of colon",
+      perfor ~ "Perforation of colon",
+      adhere ~ "Adherence to nearby organs",
+      differF ~ "Differentiation of tumour",
+      extentF ~ "Extent of local spread",
+      surgF ~ "Time until registration",
+      node4 ~ ">4 positive lymph nodes",
+      time ~ "Days until death/censored",
+      status ~ "Death"
+    ),
+    missing = "no",
+    
+    # Remove decimal places for all numbers and percentages
+    digits = list(
+      all_continuous() ~ c(0, 0),
+      all_categorical() ~ c(0, 0)
+    )
+  ) %>%
+  
+  # Add total column
+  add_overall() %>%
+  
+  # Move the total column to the far end of the table
+  modify_table_body(
+    ~ .x %>%
+      dplyr::relocate(stat_0, .after = stat_3) %>%
+      
+      # Change label name
+      dplyr::mutate(
+        label = ifelse(label == "Median, (Q1, Q3)", "Median, (IQR)", label)
+      ) %>%
+      dplyr::mutate(
+        label = ifelse(label == "Min, Max", "Range", label)
+      )
+  ) %>%
+  
+  # Modify the header
+  modify_header(
+    update = list(
+      all_stat_cols(TRUE) ~ "**{level}**",
+      label = "",
+      stat_0 = "**Total**",
+      stat_1 = "**{level}**",
+      stat_2 = "**{level}**"
+    )
+  ) %>%
+  
+  # Test for differences between groups
+  # add_p() %>%
+  
+  # Bold labels for readability
+  bold_labels() %>%
+  
+  # Modify footnotes
+  modify_footnote(
+    c(all_stat_cols()) ~ NA
+  ) %>%
+  
+  # Convert to gt table
+  as_gt() 
+```
+
+#### Figure 1: Kaplan-Meier suvival plots for key predictors
+
+```{r, fig.width=12, fig.height=29, echo=FALSE}
+# Create survfit objects
+m1 <- survfit( Surv(time, status) ~ rx, data = df1)
+m2 <- survfit( Surv(time, status) ~ sexF, data = df1)
+m3 <- survfit( Surv(time, status) ~ ageF, data = df1)
+m4 <- survfit( Surv(time, status) ~ obstruct, data = df1)
+m5 <- survfit( Surv(time, status) ~ perfor, data = df1)
+m6 <- survfit( Surv(time, status) ~ adhere, data = df1)
+m7 <- survfit( Surv(time, status) ~ differF, data = df1)
+m8 <- survfit( Surv(time, status) ~ extentF, data = df1)
+m9 <- survfit( Surv(time, status) ~ surgF, data = df1)
+m10 <- survfit( Surv(time, status) ~ node4, data = df1)
+
+# Define titles for plot
+titleList <- list("Treatment", "Sex", "Age", "Obstruction of colon", "Perforation of colon", "Adherence to nearby organs" ,"Differentiation of tumour", "Extent of local spread", "Time until registration", ">4 positive lymph nodes")
+
+# Plot the survfit objects
+survPlots <- ggsurvplot(list(m1,m2,m3,m4,m5,m6,m7,m8,m9,m10), 
+              data = df1, 
+              palette = "Set2",
+              ggtheme = theme_minimal(),
+              xlab = "Survival (days)",
+              surv.median.line = 'hv',
+              pval=TRUE,
+              risk.table = TRUE,
+              conf.int = TRUE,
+              title = titleList,
+              censor = FALSE) 
+
+arrange_ggsurvplots(survPlots, print = TRUE, ncol = 2, nrow = 5)
+```
+
+**Key Findings:**:
+
+Survival following treatment for colon cancer was not differentiated by
+age (p=0.58), sex (p=0.49) or perforation of colon (p=0.56).
+
+However, survival outcomes did differ across the categories of the
+remaining variables, with better survival rates associated with the
+Lev+5FU treatment, unobstructed colon, no adherence to nearby organs,
+well or moderately differentiated tumour, local spread limited to the
+submucosa or muscle, shorter time until registration and fewer positive
+lymph nodes.
+
+### Table 2. Hazard ratios and 95% Confidence Intervals for univariable and multivariable Cox regression models
+
+```{r echo=FALSE}
+c1 <- tbl_regression(coxph(Surv(time, status) ~ rx, data = df1), label = rx ~ 'Treatment', exponentiate = TRUE)
+c2 <- tbl_regression(coxph(Surv(time, status) ~ sex, data = df1), label = sex ~ "Sex", exponentiate = TRUE)
+c3 <- tbl_regression(coxph(Surv(time, status) ~ ageF, data = df1), label = ageF ~ "Age (70+ years)", show_single_row = 'ageF', exponentiate = TRUE)
+c4 <- tbl_regression(coxph(Surv(time, status) ~ obstruct, data = df1), label = obstruct ~ "Obstruction of colon", exponentiate = TRUE)
+c5 <- tbl_regression(coxph(Surv(time, status) ~ perfor, data = df1), label = perfor ~ "Perforation of colon", exponentiate = TRUE)
+c6 <- tbl_regression(coxph(Surv(time, status) ~ adhere, data = df1), label = adhere ~ "Adherence to nearby organs", exponentiate = TRUE)
+c7 <- tbl_regression(coxph(Surv(time, status) ~ differF, data = df1), label = differF ~ "Differentiation of tumour", exponentiate = TRUE)
+c8 <- tbl_regression(coxph(Surv(time, status) ~ extentF, data = df1), label = extentF ~ "Extent of local spread", exponentiate = TRUE)
+c9 <- tbl_regression(coxph(Surv(time, status) ~ surg, data = df1), label = surg ~ "Time until registration", exponentiate = TRUE)
+c10 <- tbl_regression(coxph(Surv(time, status) ~ node4, data = df1), label = node4 ~ ">4 positive lymph nodes", exponentiate = TRUE)
+
+
+univariate <- tbl_stack(list(c1, c2, c3, c4, c5, c6, c7, c8, c9, c10))
+
+
+labList2 <- list(
+  rx ~ "Treatment",
+  obstruct ~ "Obstruction of colon",
+  adhere ~ "Adherence to nearby organs",
+  differF ~ "Differentiation of tumour",
+  extentF ~ "Extent of local spread",
+  surg ~ "Time until registration",
+  node4 ~ ">4 positive lymph nodes"
+)
+
+multivariate <- tbl_regression(coxph(Surv(time, status) ~ rx + obstruct + adhere + differF + extentF + surg + node4, data = df1), 
+                               exponentiate = TRUE, label = labList2)
+
+tbl_merge(list(univariate, multivariate),
+          tab_spanner = c("**Univariable**", "**Multivariable**"))
+```
+
+**Key Findings:**
+
+The estimates confirmed that although treatment with levamisole did not
+improve outcomes compared to the control group (HR = 0.98, 95% CI =
+0.79-1.23), the hazard of death was 30% lower among patients treated
+with levamisole+5-fluorouracil (HR = 0.70, 95% CI = 0.55-0.88). Other
+factors significantly associated with increased hazard of death included
+obstruction of the colon (HR = 1.29, 95% CI = 1.03-1.63), local spread
+to contiguous regions (HR = 3.07, 95% CI = 1.06-8.94), longer time
+between surgery and registration (HR = 1.27, 95% CI = 1.03-1.56) and
+more than 4 positive lymph nodes (HR = 2.49, 95% CI = 2.05-3.02).
+
+### Figure 2: Forest plot for hazard ratios and 95% confidence intervals for multivariable Cox regression models
+
+```{r echo=FALSE}
+# Organze the dataset ready for the forest plot
+cox_model <- coxph(Surv(time, status) ~ rx + obstruct + adhere + differF + extentF + surg + node4, data = df1)
+
+cox_results <- tidy(cox_model, exponentiate = TRUE)  %>%
+  mutate(
+    variable = term,  
+    conf.low = exp(log(estimate) - 1.96 * std.error),
+    conf.high = exp(log(estimate) + 1.96 * std.error))
+
+# Get the cout for each category
+count <- df1 %>%
+  select(rx, obstruct, adhere, differF, extentF, surg, node4) %>%
+    mutate(across(everything(), as.character)) %>% 
+    pivot_longer(cols = everything(), names_to = "variable", values_to = "category") %>%
+    count(variable, category)  %>%
+    mutate(category = case_when(variable == "adhere" & category == "0" ~ "no_adhere",
+                                variable == "adhere" & category == "1" ~ "adhere",
+                                category == "moderate" ~ "differFmoderate",
+                                category == "poor" ~ "differFpoor",
+                                category == "well" ~ "differFwell",
+                                category == "contiguous" ~ "extentFcontiguous",
+                                category == "muscle" ~ "extentFmuscle",
+                                category == "serosa" ~ "extentFserosa",
+                                category == "submucosa" ~ "extentFsubmucosa",
+                                variable == "node4" & category == "0" ~ "no_node4",
+                                variable == "node4" & category == "1" ~ "node4",
+                                variable == "obstruct" & category == "0" ~ "no_obstruct",
+                                variable == "obstruct" & category == "1" ~ "obstruct",
+                                variable == "surg" & category == "0" ~ "no_surg",
+                                variable == "surg" & category == "1" ~ "surg",
+                                category == "Lev" ~ "rxLev",
+                                category == "Lev+5FU" ~ "rxLev+5FU",
+                                category == "Obs" ~ "rxObs")) %>%
+  select(-variable)
+
+# Identify reference categories
+reference_groups <- data.frame(
+         variable = c("rxObs", "no_obstruct","no_adhere","differFwell","extentFsubmucosa","no_surg","no_node4"),  # Categorical variables
+         estimate = 1,  # HR = 1 for reference group
+         conf.low = 1,  # CI lower bound
+         conf.high = 1,  # CI upper bound
+         p.value = NA  # No p-value for reference
+)
+
+
+
+# Combine reference groups with Cox results
+cox_results_final <- bind_rows(reference_groups, cox_results) %>%
+  mutate(variable = factor(variable, levels=c("rxObs","rxLev","rxLev+5FU","no_obstruct","obstruct",
+                                                     "no_adhere","adhere","differFwell","differFmoderate","differFpoor",
+                                                     "extentFsubmucosa","extentFmuscle","extentFserosa","extentFcontiguous",
+                                                     "no_surg","surg","no_node4","node4"))) %>%
+  arrange(variable) %>%
+  left_join(count, by = c("variable" = "category")) %>%
+  mutate(variable = case_when(variable == "rxObs" ~ "Obs",
+                              variable == "rxLev" ~ "Lev",
+                              variable == "rxLev+5FU" ~ "Lev+5FU",
+                              variable == "no_obstruct" ~ "No",
+                              variable == "obstruct" ~ "Yes",
+                              variable == "no_adhere" ~ "No",
+                              variable == "adhere" ~ "Yes",
+                              variable == "differFwell" ~ "Well",
+                              variable == "differFmoderate" ~ "Moderate",
+                              variable == "differFpoor" ~ "Poor",
+                              variable == "extentFsubmucosa" ~ "Submucosa",
+                              variable == "extentFmuscle" ~ "Muscle",
+                              variable == "extentFserosa" ~ "Serosa",
+                              variable == "extentFcontiguous" ~ "Contiguous",
+                              variable == "no_surg" ~ "No",
+                              variable == "surg" ~ "Yes",
+                              variable == "no_node4" ~ "No",
+                              variable == "node4" ~ "Yes")) %>%
+# Idex the text
+  mutate(variable = paste0("   ", variable)) %>%
+# Insert variable names
+  add_row(variable = "Treatment", .before = 1) %>%
+  add_row(variable = "Obstruction of colon", .before = 5) %>%
+  add_row(variable = "Aherence to nearby orgrans", .before = 8) %>%
+  add_row(variable = "Differentiation of tumor" ,.before = 11) %>%
+  add_row(variable = "Extent of local spread", .before = 15) %>%
+  add_row(variable = "Time until registration" ,.before = 20) %>%
+  add_row(variable = ">4 positive lymph nodes" ,.before = 23) %>%
+  add_row(variable = "Total participants", .before = 1) %>%
+# Add total number of participants
+  mutate(n = ifelse(variable == "Total participants", 906, n),
+         n = ifelse(is.na(n), "", as.character(n))) %>%
+  rename(`Total participants` = n) %>%
+  rename(`Subgroup` = variable)
+
+```
+
+```{r, fig.width=12, fig.height=10, echo=FALSE}
+# Add a blank column for the forest plot to display CI
+cox_results_final$` ` <- paste(rep(" ", 40), collapse = " ")
+
+# Create a CI column to display
+cox_results_final$`HR (95% CI)` <- ifelse(is.na(cox_results_final$estimate), "",
+                                          sprintf("%.2f (%.2f to %.2f)",
+                                                  cox_results_final$estimate, cox_results_final$conf.low, cox_results_final$conf.high))
+
+cox_results_final$`HR (95% CI)` <- ifelse(cox_results_final$`HR (95% CI)` == "1.00 (1.00 to 1.00)", "Ref.",cox_results_final$`HR (95% CI)`)
+
+theme <- forest_theme(
+  base_size = 16,
+  colhead = list(
+    fg_params = list(hjust = c(0, 1, 1, 0), x = c(0, 0.9, 0.9, 0))  # Left-align col 1, right-align cols 2 & 3
+  )
+)
+
+
+ # Make a forest plot
+g <- forest(cox_results_final[,c(1,9, 11,10)],
+       est = cox_results_final$estimate,
+       lower = cox_results_final$conf.low,
+       upper = cox_results_final$conf.high,
+       ci_column = 4,
+       ref_line = 1,
+       x_trans="log",
+       xlim = c(0, 10),
+       ticks_at = c(0.5, 1, 2, 4, 8),
+       ticks_minor = c(0.75, 1.5, 3, 6),
+       arrow_lab = c("Decreased risk", "Increased risk"),
+       theme=theme)
+
+# Edit bold text
+g <- edit_plot(g,
+          row=c(1,2,6,9,12,16,21,24),
+          gp=grid::gpar(fontface="bold",cex=1))
+
+
+# Edit the column alignment
+g <-edit_plot(g, col=2:3,
+               hjust=unit(1,"npc"),
+               x=unit(0.9,"npc"))
+
+
+# Add borders
+g <-add_border(g, part="header",row =1, where = "bottom", gp=grid::gpar(lwd=3, col="grey40"))
+
+g
+```
+
+
+### Assessing the proportional harzard assumptions
+
+#### Using a chi-squared test based on Schoenfeld residuals:
+H0: Covariate effect is constant (proportional) over time 
+HA: Covariate effect changes over time
+
+The null hypothesis of proportional hazard is tested for each covariate individually and jointly as well. 
+
+If p is <0.05 then there is evidence for violation of the proportional hazards assumption.
+
+```{r}
+cox.zph(cox_model)
+```
+
+The test confirms that the proportional hazards assumption is violated for obstruction of colon (p=0.01), differentiation of tumour (p < 0.001) and marginally for extent of local spread (p=0.06). The test also suggests that the variable indicating more than 4 positive lymph nodes also violates the assumption (p=0.016); the global test also indicates the assumption is invalid (p<0.001).
+
+
+#### A plot of a smoothed curve over the Schoenfeld residuals
+Note: It is actually plotting the coefficient for each predictor at each time point over time). We want to see a flat line over time. 
+
+(Side note: If we have a large data, we will be able to detect very small changes of coefficients over time. So if the change in the coefficient is not large enough to be clinically meaningfully, it can perhaps be ignored as well). 
+
+```{r}
+plot(cox.zph(cox_model))
+```
+
+### Dealing with proportional hazards violation as a sensitivity Analysis
+#### Startify by the non-PH variable 
+
+In the stratified Cox model:
+- The cox model is estimated separately in each stratum
+- Drawback: we cannot quantify the effect of the stratification variable on survival (i.e., no coefficient will be estimated). 
+
+Because these variables are not primary factors of interest we can control for them using stratification. The resulting estimated hazard ratios and 95% confidence intervals are presented in Table 3. As can be seen, the proportional hazards assumption is met in this model. 
+
+
+```{r}
+mvModelStratified <- coxph(Surv(time, status) ~ rx + strata(obstruct) + adhere + strata(differF) + strata(extentF) + surg + strata(node4), data = df1)
+
+cox.zph(mvModelStratified)
+```
+
+
+
+
